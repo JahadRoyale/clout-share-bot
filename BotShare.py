@@ -7,6 +7,33 @@ import requests
 from urllib.parse import quote
 from bs4 import BeautifulSoup
 
+def normalize_facebook_url(url):
+    """
+    Converts desktop photo viewer URLs, Reels, and complex parameters
+    into clean Facebook entity URLs that mbasic composer can process.
+    """
+    # 1. Extract fbid from desktop photo links
+    fbid_match = re.search(r'[?&]fbid=(\d+)', url)
+    if fbid_match:
+        return f"https://www.facebook.com/{fbid_match.group(1)}"
+        
+    # 2. Extract story_fbid from post links
+    story_match = re.search(r'[?&]story_fbid=(\d+)', url)
+    if story_match:
+        return f"https://www.facebook.com/{story_match.group(1)}"
+
+    # 3. Clean FB Reel links
+    reel_match = re.search(r'reel/(\d+)', url)
+    if reel_match:
+        return f"https://www.facebook.com/reel/{reel_match.group(1)}/"
+
+    # 4. Extract numeric post IDs from /posts/ or /photos/ paths
+    post_match = re.search(r'/(?:posts|permalink|photos)/(\d+)', url)
+    if post_match:
+        return f"https://www.facebook.com/{post_match.group(1)}"
+
+    return url
+
 def send_facebook_share(cookie_str, target_url):
     """
     Executes a Facebook share using mbasic form extraction and cookie auth.
@@ -28,8 +55,9 @@ def send_facebook_share(cookie_str, target_url):
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
         })
 
-        # URL-encode target_url so query params like &fbid= and &set= aren't stripped by mbasic
-        encoded_target = quote(target_url, safe='')
+        # Normalize URL to resolve desktop photo links and query strings
+        clean_target = normalize_facebook_url(target_url)
+        encoded_target = quote(clean_target, safe='')
 
         # 1. Request mbasic composer for target link
         composer_url = f"https://mbasic.facebook.com/composer/mbasic/?c_src=share&referrer=permalink&target={encoded_target}"
@@ -42,19 +70,19 @@ def send_facebook_share(cookie_str, target_url):
         soup = BeautifulSoup(res.text, 'html.parser')
         form = soup.find('form', action=re.compile(r'/composer/mbasic/'))
         
-        # Fallback check for alternate mbasic form structures
+        # Fallback selectors if default composer form is missing
         if not form:
             form = soup.find('form', action=re.compile(r'sharer')) or soup.find('form', action=re.compile(r'/a/mbasic/'))
 
         if not form:
             page_title = soup.title.string.strip() if soup.title and soup.title.string else 'Unknown Page'
-            print(f"[!] Share form not found. Page title returned: '{page_title}'. Cookie may be invalid or blocked.")
+            print(f"[!] Share form not found. Page title: '{page_title}'. Target used: {clean_target}")
             return False
 
         action = form['action']
         action_url = action if action.startswith('http') else "https://mbasic.facebook.com" + action
         
-        # Extract required form inputs (fb_dtsg, jazoest, etc.)
+        # Extract required hidden inputs (fb_dtsg, jazoest, etc.)
         payload = {}
         for inp in form.find_all('input'):
             name = inp.get('name')
@@ -83,11 +111,11 @@ def main():
         print(f"Invalid JSON payload: {e}")
         sys.exit(1)
 
-    target_url = payload.get('link')
+    raw_url = payload.get('link')
     shares_per_bot = payload.get('shares_per_bot', 10)
     bots = payload.get('bots', [])
 
-    print(f"--- [TASK STARTED] Target: {target_url} | Bots: {len(bots)} ---")
+    print(f"--- [TASK STARTED] Raw Target: {raw_url} | Bots: {len(bots)} ---")
 
     for bot in bots:
         bot_id = bot.get('id')
@@ -95,7 +123,7 @@ def main():
         print(f"[*] Processing Bot Account ID: {bot_id}")
 
         for i in range(shares_per_bot):
-            success = send_facebook_share(cookie_data, target_url)
+            success = send_facebook_share(cookie_data, raw_url)
             if not success:
                 print(f"[!] Bot {bot_id} failed share submission. Skipping account.")
                 break

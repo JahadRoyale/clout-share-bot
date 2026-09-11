@@ -6,14 +6,13 @@ import re
 import requests
 
 def share_via_graph_api(token, target_url):
-    """
-    Publishes a share directly to the bot's feed using Facebook's Graph API.
-    Bypasses mbasic scraping and datacenter IP blocks.
-    """
+    """Publishes a share via Graph API by passing the URL as a status message."""
     try:
         url = "https://graph.facebook.com/v18.0/me/feed"
+        # Using 'message' bypasses the strict 'link' parameter validation
+        # Facebook will automatically generate the share preview.
         payload = {
-            'link': target_url,
+            'message': target_url,
             'access_token': token
         }
         res = requests.post(url, data=payload, timeout=12)
@@ -23,15 +22,15 @@ def share_via_graph_api(token, target_url):
             print(f"[+] Graph API Share Success! Created Post ID: {data['id']}")
             return True
         else:
+            err_code = data.get('error', {}).get('code', 'N/A')
             error_msg = data.get('error', {}).get('message', res.text)
-            print(f"[!] Graph API Error: {error_msg}")
+            print(f"[!] Graph API Error (Code {err_code}): {error_msg}")
             return False
     except Exception as e:
         print(f"[!] Graph API Exception: {e}")
         return False
 
 def extract_token_from_string(text):
-    """Extracts EAAG/EAAB access token if present in the imported bot string."""
     match = re.search(r'(EAA[A-Za-z0-9]+)', text)
     return match.group(1) if match else None
 
@@ -45,6 +44,7 @@ def main():
         print(f"Invalid JSON payload: {e}")
         sys.exit(1)
 
+    # Graph API handles raw pfbid links perfectly natively
     target_url = payload.get('link')
     shares_per_bot = payload.get('shares_per_bot', 10)
     bots = payload.get('bots', [])
@@ -69,7 +69,7 @@ def main():
                 break
             
             print(f"[+] Bot {bot_id}: Share {i + 1}/{shares_per_bot} completed.")
-            time.sleep(random.randint(3, 6))
+            time.sleep(random.randint(4, 7))
 
     print("--- [TASK COMPLETED] ---")
 

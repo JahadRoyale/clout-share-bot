@@ -7,14 +7,51 @@ import requests
 from urllib.parse import quote
 from bs4 import BeautifulSoup
 
+def normalize_facebook_url(session, url):
+    """
+    Resolves pfbid encrypted links, desktop photos, and query parameters
+    into clean mbasic-compatible Facebook target URLs.
+    """
+    # 1. Handle pfbid links by making a preliminary GET request to resolve redirects
+    if 'pfbid' in url:
+        try:
+            res = session.get(url, timeout=10, allow_redirects=True)
+            # Extract numeric post ID (ft_ent_identifier) from HTML
+            match = re.search(r'(?:ft_ent_identifier|story_fbid)=["\']?(\d+)', res.text)
+            if match:
+                return f"https://www.facebook.com/{match.group(1)}"
+            # Fallback: extract numeric ID from final redirected URL
+            num_match = re.search(r'/(\d+)(?:/|\?|$)', res.url)
+            if num_match:
+                return f"https://www.facebook.com/{num_match.group(1)}"
+        except Exception as e:
+            print(f"[!] Warning: Could not resolve pfbid redirect automatically: {e}")
+
+    # 2. Extract fbid from photo links
+    fbid_match = re.search(r'[?&]fbid=(\d+)', url)
+    if fbid_match:
+        return f"https://www.facebook.com/{fbid_match.group(1)}"
+        
+    # 3. Extract story_fbid from standard post links
+    story_match = re.search(r'[?&]story_fbid=(\d+)', url)
+    if story_match:
+        return f"https://www.facebook.com/{story_match.group(1)}"
+
+    # 4. Clean Reel links
+    reel_match = re.search(r'reel/(\d+)', url)
+    if reel_match:
+        return f"https://www.facebook.com/reel/{reel_match.group(1)}/"
+
+    return url
+
 def send_facebook_share(cookie_str, target_url):
     """
-    Executes a Facebook share using the universal mbasic sharer endpoint.
+    Executes a Facebook share using mbasic form extraction and cookie auth.
     """
     try:
         session = requests.Session()
         
-        # Parse raw cookie string
+        # Parse cookie string
         cookies = {}
         for item in cookie_str.split(';'):
             if '=' in item:
@@ -28,36 +65,33 @@ def send_facebook_share(cookie_str, target_url):
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
         })
 
-        encoded_target = quote(target_url, safe='')
+        # Resolve pfbid / photo links to canonical numeric URLs
+        clean_target = normalize_facebook_url(session, target_url)
+        encoded_target = quote(clean_target, safe='')
 
-        # Method 1: Universal Sharer Endpoint (Supports desktop photo URLs natively)
+        # Request mbasic sharer endpoint
         sharer_url = f"https://mbasic.facebook.com/sharer.php?u={encoded_target}"
         res = session.get(sharer_url, timeout=12)
 
         soup = BeautifulSoup(res.text, 'html.parser')
         page_title = soup.title.string.strip() if soup.title and soup.title.string else 'Unknown Page'
 
-        # Method 2: Fallback to Composer Endpoint if Sharer Fails
+        # Fallback to composer endpoint if sharer returns Error
         if "Error" in page_title or res.status_code != 200:
             composer_url = f"https://mbasic.facebook.com/composer/mbasic/?c_src=share&referrer=permalink&target={encoded_target}"
             res = session.get(composer_url, timeout=12)
             soup = BeautifulSoup(res.text, 'html.parser')
             page_title = soup.title.string.strip() if soup.title and soup.title.string else 'Unknown Page'
 
-        # Locate form element
         form = soup.find('form', action=re.compile(r'/sharer/')) or soup.find('form', action=re.compile(r'/composer/'))
 
         if not form:
-            print(f"[!] Share blocked. Page Title: '{page_title}'")
-            if "Error" in page_title:
-                print("    -> Check 1: Ensure the Facebook post privacy is set to PUBLIC (🌐).")
-                print("    -> Check 2: Confirm account is not stuck on a security checkpoint.")
+            print(f"[!] Share blocked. Page Title: '{page_title}'. Target used: {clean_target}")
             return False
 
         action = form['action']
         action_url = action if action.startswith('http') else "https://mbasic.facebook.com" + action
         
-        # Extract form tokens (fb_dtsg, jazoest, etc.)
         payload = {}
         for inp in form.find_all('input'):
             name = inp.get('name')
@@ -65,7 +99,6 @@ def send_facebook_share(cookie_str, target_url):
             if name:
                 payload[name] = value
 
-        # Submit Share
         post_res = session.post(action_url, data=payload, timeout=12)
         return post_res.status_code == 200
 

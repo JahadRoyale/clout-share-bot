@@ -2,15 +2,18 @@ import sys
 import json
 import time
 import random
+import re
 import requests
+from bs4 import BeautifulSoup
 
 def send_facebook_share(cookie_str, target_url):
     """
-    Executes a post share using session cookies.
+    Executes a Facebook share using mbasic form extraction and cookie auth.
     """
     try:
         session = requests.Session()
-        # Parse cookie string into session dictionary
+        
+        # Parse cookie string into dictionary
         cookies = {}
         for item in cookie_str.split(';'):
             if '=' in item:
@@ -19,19 +22,44 @@ def send_facebook_share(cookie_str, target_url):
         
         session.cookies.update(cookies)
         session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1',
-            'Accept-Language': 'en-US,en;q=0.9'
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+            'Accept-Language': 'en-US,en;q=0.9',
         })
 
-        # Request Facebook Mobile Composer / Graph endpoint
-        # (Adapted from sintxcs/BotShare logic)
-        res = session.get("https://m.facebook.com/", timeout=10)
-        if res.status_code == 200 and ('c_user' in session.cookies or 'xs' in session.cookies):
-            # Share execution endpoint logic
+        # 1. Request mbasic composer for target link
+        composer_url = f"https://mbasic.facebook.com/composer/mbasic/?c_src=share&referrer=permalink&target={target_url}"
+        res = session.get(composer_url, timeout=12)
+        
+        if res.status_code != 200:
+            print(f"[!] HTTP {res.status_code} while reaching share composer.")
+            return False
+
+        soup = BeautifulSoup(res.text, 'html.parser')
+        form = soup.find('form', action=re.compile(r'/composer/mbasic/'))
+        
+        if not form:
+            print("[!] Share form not found. Cookie may be expired or blocked.")
+            return False
+
+        action_url = "https://mbasic.facebook.com" + form['action']
+        
+        # Extract required form inputs (fb_dtsg, jazoest, etc.)
+        payload = {}
+        for inp in form.find_all('input'):
+            name = inp.get('name')
+            value = inp.get('value', '')
+            if name:
+                payload[name] = value
+
+        # 2. Submit the Share Request
+        post_res = session.post(action_url, data=payload, timeout=12)
+        
+        if post_res.status_code == 200:
             return True
+            
         return False
     except Exception as e:
-        print(f"Share execution error: {e}")
+        print(f"[!] Share execution error: {e}")
         return False
 
 def main():
@@ -58,15 +86,13 @@ def main():
         for i in range(shares_per_bot):
             success = send_facebook_share(cookie_data, target_url)
             if not success:
-                print(f"[!] Bot {bot_id} hit a checkpoint or expired cookie. Aborting account cycle.")
+                print(f"[!] Bot {bot_id} hit a checkpoint or expired cookie. Skipping account.")
                 break
             
             print(f"[+] Bot {bot_id}: Share {i + 1}/{shares_per_bot} completed.")
-            # Random delay to evade detection
-            time.sleep(random.randint(5, 12))
+            time.sleep(random.randint(4, 8))
 
-        # Cooldown between account switches
-        time.sleep(random.randint(10, 20))
+        time.sleep(random.randint(5, 10))
 
     print("--- [TASK COMPLETED] ---")
 
